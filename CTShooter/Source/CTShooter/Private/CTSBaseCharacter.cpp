@@ -5,6 +5,12 @@
 #include "Components/InputComponent.h"
 #include "GameFramework/SpringArmComponent.h"
 #include "CTSCharacterMovementComponent.h"
+#include "CTSHealthComponent.h"
+#include "Components/TextRenderComponent.h"
+#include "GameFramework/Controller.h"
+#include "Kismet/GameplayStatics.h"
+
+DEFINE_LOG_CATEGORY_STATIC(BaseCharacterLog, All, All)
 
 ACTSBaseCharacter::ACTSBaseCharacter(const FObjectInitializer& ObjInit)
     : Super(ObjInit.SetDefaultSubobjectClass<UCTSCharacterMovementComponent>(ACharacter::CharacterMovementComponentName))
@@ -21,11 +27,26 @@ ACTSBaseCharacter::ACTSBaseCharacter(const FObjectInitializer& ObjInit)
 
     CameraComponent = CreateDefaultSubobject<UCameraComponent>("Camera");
     CameraComponent->SetupAttachment(SpringArmComponent);
+
+    HealthComponent = CreateDefaultSubobject<UCTSHealthComponent>("HealthComponent");
+
+    HealthTextComponent = CreateDefaultSubobject<UTextRenderComponent>("HealthTextComponent");
+    HealthTextComponent->SetupAttachment(GetRootComponent());
 }
 
 void ACTSBaseCharacter::BeginPlay()
 {
     Super::BeginPlay();
+
+    check(HealthComponent);
+    check(HealthTextComponent);
+    check(GetCharacterMovement());
+
+    OnHealthChanged(HealthComponent->GetHealth());
+    HealthComponent->OnDeath.AddUObject(this, &ACTSBaseCharacter::OnDeath);
+    HealthComponent->OnHealthChanged.AddUObject(this, &ACTSBaseCharacter::OnHealthChanged);
+
+    LandedDelegate.AddDynamic(this, &ACTSBaseCharacter::OnGroundLanded);
 }
 
 void ACTSBaseCharacter::Tick(float DeltaTime)
@@ -36,6 +57,7 @@ void ACTSBaseCharacter::Tick(float DeltaTime)
 void ACTSBaseCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
 {
     Super::SetupPlayerInputComponent(PlayerInputComponent);
+    check(PlayerInputComponent);
 
     PlayerInputComponent->BindAxis("MoveForward", this, &ACTSBaseCharacter::MoveForward);
     PlayerInputComponent->BindAxis("MoveRight", this, &ACTSBaseCharacter::MoveRight);
@@ -95,4 +117,41 @@ void ACTSBaseCharacter::OnStopRunning()
 bool ACTSBaseCharacter::IsRunning() const
 {
     return WantsToRun && IsMovingForward && !GetVelocity().IsZero();
+}
+
+void ACTSBaseCharacter::OnDeath()
+{
+    UE_LOG(BaseCharacterLog, Error, TEXT("Character %s is Dead"), *GetName());
+
+    PlayAnimMontage(DeathAnimMontage);
+
+    GetCharacterMovement()->DisableMovement();
+
+    SetLifeSpan(LifeSpanOnDeath);
+
+    if (Controller)
+    {
+        Controller->ChangeState(NAME_Spectating);
+    }
+}
+
+void ACTSBaseCharacter::OnHealthChanged(float Health)
+{
+    HealthTextComponent->SetText(FText::FromString(FString::Printf(TEXT("%.0f"), Health)));
+}
+
+void ACTSBaseCharacter::OnGroundLanded(const FHitResult& Hit)
+{
+    const auto FallVelocityZ = -GetVelocity().Z;
+    UE_LOG(BaseCharacterLog, Display, TEXT("On Landed: %f"), FallVelocityZ);
+
+    if (FallVelocityZ < LandedDamageVelocity.X)
+    {
+        return;
+    }
+
+    const auto FinalDamage = FMath::GetMappedRangeValueClamped(LandedDamageVelocity, LandedDamage, FallVelocityZ);
+
+    UE_LOG(BaseCharacterLog, Display, TEXT("Final Damage: %f"), FinalDamage);
+    UGameplayStatics::ApplyDamage(this, FinalDamage, GetController(), nullptr, nullptr);
 }
